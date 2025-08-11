@@ -1,0 +1,9 @@
+Transcription of: test_audio.wav
+Generated on: 6881.294750366
+Duration: 2.0 seconds
+Confidence: 0.85
+Model: mock-canary-qwen-2.5b
+
+--- TRANSCRIPTION ---
+
+Mock transcription for ef7bb398-5bc1-472c-bb23-1d9da71f843e_test_audio_processed.wav (duration: 2.00s). This is a placeholder transcription that would be replaced by actual Canary-Qwen-2.5B model output. The audio file has been successfully processed and would normally contain the speech-to-text conversion from the NVIDIA Canary-Qwen-2.5B model.

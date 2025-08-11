@@ -5,6 +5,7 @@ import aiofiles
 import asyncio
 import uuid
 import os
+import time
 from typing import Dict, Optional
 from enum import Enum
 import json
@@ -109,7 +110,7 @@ async def upload_audio(file: UploadFile = File(...)):
             "file_path": str(file_path),
             "format": format_info,
             "file_size": file_size,
-            "created_at": asyncio.get_event_loop().time(),
+            "created_at": time.time(),  # Use actual Unix timestamp
             "result": None,
             "error": None
         }
@@ -188,6 +189,54 @@ async def get_transcription_result(job_id: str):
             "status": job["status"],
             "message": "Transcription still in progress"
         }
+
+@app.get("/download/{job_id}")
+async def download_transcription(job_id: str):
+    """Download transcription as a text file"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs[job_id]
+    if job["status"] != JobStatus.COMPLETED or not job.get("result"):
+        raise HTTPException(status_code=400, detail="Transcription not completed or not available")
+    
+    transcription_text = job["result"].get("transcription", "")
+    if not transcription_text:
+        raise HTTPException(status_code=400, detail="No transcription text available")
+    
+    # Create filename based on original file
+    original_filename = Path(job["filename"]).stem
+    download_filename = f"{original_filename}_transcription.txt"
+    
+    # Format the timestamp as a human-readable date
+    from datetime import datetime
+    created_timestamp = job.get("created_at", time.time())
+    if isinstance(created_timestamp, (int, float)):
+        # Convert from timestamp to readable date
+        created_date = datetime.fromtimestamp(created_timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        created_date = str(created_timestamp)
+    
+    # Create transcription content with metadata
+    content = f"""Transcription of: {job["filename"]}
+Generated on: {created_date}
+Duration: {job["result"].get("duration", "Unknown")} seconds
+Confidence: {job["result"].get("confidence", "Unknown")}
+Model: {job["result"].get("model", "Unknown")}
+
+--- TRANSCRIPTION ---
+
+{transcription_text}
+"""
+    
+    from fastapi.responses import Response
+    return Response(
+        content=content,
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": f"attachment; filename={download_filename}"
+        }
+    )
 
 @app.delete("/job/{job_id}")
 async def delete_job(job_id: str):

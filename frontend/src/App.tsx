@@ -223,6 +223,44 @@ function App() {
     poll();
   };
 
+  const downloadTranscription = async (index: number) => {
+    const fileData = uploadedFiles[index];
+    if (!fileData?.job?.job_id || fileData.job.status !== 'completed') return;
+
+    try {
+      const response = await axios.get(`${API_BASE_URL}/download/${fileData.job.job_id}`, {
+        responseType: 'blob'
+      });
+
+      // Create download link
+      const blob = new Blob([response.data], { type: 'text/plain' });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      
+      // Extract filename from content-disposition header or create default
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = `${fileData.file.name}_transcription.txt`;
+      
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+      
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+      
+    } catch (error: any) {
+      console.error('Download failed:', error);
+      alert('Failed to download transcription: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+
   const removeFile = (index: number) => {
     const fileData = uploadedFiles[index];
     if (fileData.job?.job_id) {
@@ -241,7 +279,7 @@ function App() {
     <div className="App">
       <header className="App-header">
         <h1>🎤 Canary STT Transcription</h1>
-        <p>Powered by NVIDIA Canary-Qwen-2.5B</p>
+        <p>High-Performance Speech-to-Text Service</p>
       </header>
 
       <main className="main-content">
@@ -342,14 +380,23 @@ function App() {
                 <div className="transcription-result">
                   <div className="result-header">
                     <h4>Transcription Result</h4>
-                    <div className="result-meta">
-                      {fileData.job.result.duration && (
-                        <span>Duration: {formatDuration(fileData.job.result.duration)}</span>
-                      )}
-                      {fileData.job.result.confidence && (
-                        <span>Confidence: {(fileData.job.result.confidence * 100).toFixed(1)}%</span>
-                      )}
+                    <div className="result-actions">
+                      <button 
+                        className="action-button save"
+                        onClick={() => downloadTranscription(index)}
+                        title="Save transcription to file"
+                      >
+                        💾 Save
+                      </button>
                     </div>
+                  </div>
+                  <div className="result-meta">
+                    {fileData.job.result.duration && (
+                      <span>Duration: {formatDuration(fileData.job.result.duration)}</span>
+                    )}
+                    {fileData.job.result.confidence && (
+                      <span>Confidence: {(fileData.job.result.confidence * 100).toFixed(1)}%</span>
+                    )}
                   </div>
                   <div className="transcription-text">
                     {fileData.job.result.transcription}
