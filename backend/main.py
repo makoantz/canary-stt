@@ -9,8 +9,14 @@ from typing import Dict, Optional
 from enum import Enum
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from hardware_config import hardware_optimizer
 
 app = FastAPI(title="Canary STT API", version="1.0.0")
+
+# Initialize high-performance processing pool
+max_workers = hardware_optimizer.get_optimal_workers()
+executor = ThreadPoolExecutor(max_workers=max_workers)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +39,17 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 @app.get("/")
 async def root():
-    return {"message": "Canary STT API is running"}
+    hardware_info = hardware_optimizer.monitor_memory_usage()
+    return {
+        "message": "Canary STT API is running",
+        "hardware": {
+            "gpus": len(hardware_optimizer.gpu_devices),
+            "system_memory_gb": hardware_optimizer.total_system_memory_gb,
+            "max_workers": max_workers,
+            "gpu_names": [gpu.name for gpu in hardware_optimizer.gpu_devices]
+        },
+        "memory_usage": hardware_info
+    }
 
 SUPPORTED_FORMATS = {
     '.wav': 'WAV Audio',
@@ -191,7 +207,7 @@ async def delete_job(job_id: str):
     return {"message": "Job deleted successfully"}
 
 async def process_transcription(job_id: str):
-    """Background task to process transcription"""
+    """Background task to process transcription with GPU load balancing"""
     try:
         from transcription_service import transcription_service
         
@@ -201,8 +217,14 @@ async def process_transcription(job_id: str):
         # Add progress tracking
         job["progress"] = {"stage": "preprocessing", "percent": 10}
         
+        # Get optimal GPU for this job
+        optimal_gpu = hardware_optimizer.get_device_for_job(job_id)
+        if optimal_gpu >= 0:
+            job["assigned_gpu"] = optimal_gpu
+            job["progress"]["gpu"] = optimal_gpu
+        
         # Perform actual transcription
-        result = await transcription_service.transcribe_audio(audio_path)
+        result = await transcription_service.transcribe_audio(audio_path, job_id=job_id)
         
         job["result"] = result
         job["status"] = JobStatus.COMPLETED

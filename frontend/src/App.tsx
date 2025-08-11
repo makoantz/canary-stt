@@ -3,7 +3,7 @@ import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 import './App.css';
 
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://192.168.80.242:8000';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
 
 interface TranscriptionJob {
   job_id: string;

@@ -26,11 +26,14 @@ lsof -ti:8000 | xargs kill -9 2>/dev/null || true
 # Wait for ports to be free
 sleep 3
 
-# Get the correct local IP address (not gateway/docker IPs)
-JETSON_IP=$(hostname -I | tr ' ' '\n' | grep -E '^192\.168\.(80|1)\.' | grep -v '^192\.168\.1\.1$' | head -1)
-if [ -z "$JETSON_IP" ]; then
+# Get the correct local IP address
+SERVER_IP=$(hostname -I | tr ' ' '\n' | grep -E '^192\.168\.' | head -1)
+if [ -z "$SERVER_IP" ]; then
     # Fallback: get primary network interface IP
-    JETSON_IP=$(ip route get 1 | awk '{print $7; exit}')
+    SERVER_IP=$(ip route get 1 | awk '{print $7; exit}')
+fi
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP="localhost"
 fi
 
 # Check if required ports are available
@@ -46,19 +49,27 @@ fi
 
 # Start backend
 echo "Starting FastAPI backend on 0.0.0.0:8000..."
-cd /home/makojetson/dataengg/canary-stt
+cd /home/makodev58/DataEngg/canary-stt
 
-# Check if virtual environment exists
-if [ ! -d "canary-dev" ]; then
-    echo "❌ Virtual environment 'canary-dev' not found. Please run: uv venv canary-dev"
-    exit 1
+# Check if we have the conda environment available
+if [ -f "/home/makodev58/anaconda3/bin/python" ]; then
+    PYTHON_CMD="/home/makodev58/anaconda3/bin/python"
+    echo "Using conda Python: $PYTHON_CMD"
+elif [ -d "canary-stt" ]; then
+    # Use the existing venv
+    source canary-stt/bin/activate
+    PYTHON_CMD="python"
+    echo "Using virtual environment Python"
+else
+    # Try system Python
+    PYTHON_CMD="python3"
+    echo "Using system Python: $PYTHON_CMD"
 fi
 
-source canary-dev/bin/activate
 cd backend
 
 # Start backend with error handling
-python main.py &
+$PYTHON_CMD main.py &
 BACKEND_PID=$!
 
 # Wait for backend to start
@@ -81,7 +92,7 @@ echo "✅ Backend started successfully"
 
 # Start frontend
 echo "Starting React frontend on 0.0.0.0:3000..."
-cd /home/makojetson/dataengg/canary-stt/frontend
+cd /home/makodev58/DataEngg/canary-stt/frontend
 
 # Check if package.json exists
 if [ ! -f "package.json" ]; then
@@ -107,13 +118,13 @@ fi
 
 echo ""
 echo "🚀 Application starting up..."
-echo "📡 Backend API: http://$JETSON_IP:8000"
-echo "🌐 Frontend UI: http://$JETSON_IP:3000"
+echo "📡 Backend API: http://$SERVER_IP:8000"
+echo "🌐 Frontend UI: http://$SERVER_IP:3000"
 echo ""
 echo "🌍 Network Access:"
-echo "   - Backend: http://$JETSON_IP:8000"
-echo "   - Frontend: http://$JETSON_IP:3000"
-echo "   - API Docs: http://$JETSON_IP:8000/docs"
+echo "   - Backend: http://$SERVER_IP:8000"
+echo "   - Frontend: http://$SERVER_IP:3000"
+echo "   - API Docs: http://$SERVER_IP:8000/docs"
 echo ""
 echo "Press Ctrl+C to stop both services"
 

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
-from jetson_config import jetson_optimizer
+from hardware_config import hardware_optimizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,72 +17,46 @@ class CanaryTranscriptionService:
     def __init__(self):
         self.model = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.config = jetson_optimizer.optimize_for_jetson()
-        jetson_optimizer.setup_cuda_optimizations()
+        self.config = hardware_optimizer.optimize_for_hardware()
+        hardware_optimizer.setup_cuda_optimizations()
+        hardware_optimizer.setup_multi_gpu()
         logger.info(f"Using device: {self.device}")
-        logger.info(f"Jetson config: {self.config}")
+        logger.info(f"Hardware config: {self.config}")
         
     async def load_model(self):
-        """Load the Canary-Qwen-2.5B model"""
+        """Load the best available transcription model"""
         try:
             # Clear CUDA cache if available
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 
-            logger.info("Loading NVIDIA Canary-Qwen-2.5B model...")
+            logger.info("Loading transcription models (priority: Canary > Whisper > Mock)...")
             
-            # Import NeMo after confirming installation
-            from nemo.collections.speechlm2.models import SALM
-            
-            # Load model with memory-optimized settings for Jetson
-            logger.info("Loading with memory-optimized settings for Jetson...")
-            self.model = SALM.from_pretrained('nvidia/canary-qwen-2.5b')
-            
-            # Move to CPU explicitly and set to eval mode
-            self.model = self.model.to('cpu')
-            self.model.eval()
-            
-            # Set to float32 for CPU inference stability
-            self.model = self.model.float()
-            
-            logger.info("Model loaded successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load model: {str(e)}")
-            # Try alternative loading method
-            return await self._load_model_alternative()
-    
-    async def _load_model_alternative(self):
-        """Alternative model loading for compatibility"""
-        try:
-            logger.info("Trying alternative model loading method...")
-            
-            # Try using transformers library as fallback
-            from transformers import AutoTokenizer, AutoModel
-            
-            model_name = "nvidia/canary-qwen-2.5b"
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModel.from_pretrained(
-                model_name, 
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else "cpu"
-            )
-            
-            logger.info("Alternative model loading successful")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Alternative model loading failed: {str(e)}")
-            
-            # Try loading Whisper as a working fallback
+            # First try to load real Canary-Qwen-2.5B model
             try:
-                logger.info("Trying Whisper as working transcription service...")
+                logger.info("Attempting to load Canary-Qwen-2.5B model...")
+                from canary_transcription import canary_transcription_service
+                
+                success = await canary_transcription_service.load_model()
+                if success:
+                    logger.info("✅ Using Canary-Qwen-2.5B model")
+                    self.model = "canary"
+                    self.canary_service = canary_transcription_service
+                    return True
+                else:
+                    logger.warning("Canary model loading failed, trying alternatives...")
+                    
+            except Exception as canary_error:
+                logger.warning(f"Canary model not available: {canary_error}")
+            
+            # Fallback to Whisper (real speech-to-text)
+            try:
+                logger.info("Loading Whisper as speech-to-text service...")
                 from whisper_transcription import whisper_transcription_service
                 
                 success = await whisper_transcription_service.load_model()
                 if success:
-                    logger.info("Using Whisper transcription service")
+                    logger.info("✅ Using Whisper model")
                     self.model = "whisper"
                     self.whisper_service = whisper_transcription_service
                     return True
@@ -90,11 +64,18 @@ class CanaryTranscriptionService:
                     raise Exception("Whisper loading failed")
                     
             except Exception as whisper_error:
-                logger.error(f"Whisper loading also failed: {whisper_error}")
-                # Create a mock service for development
-                logger.warning("Using mock transcription service for development")
-                self.model = "mock"
-                return True
+                logger.warning(f"Whisper loading failed: {whisper_error}")
+            
+            # Last resort: mock service (for development only)
+            logger.warning("⚠️  Using mock transcription service - no real models available")
+            logger.warning("Install 'openai-whisper' or ensure Canary model access for real transcription")
+            self.model = "mock"
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load any transcription model: {str(e)}")
+            return False
+    
     
     async def preprocess_audio(self, audio_path: str) -> Optional[str]:
         """Convert audio to required format (16kHz mono WAV)"""
@@ -236,7 +217,7 @@ class CanaryTranscriptionService:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
-    async def transcribe_audio(self, audio_path: str) -> Dict[str, Any]:
+    async def transcribe_audio(self, audio_path: str, job_id: str = None) -> Dict[str, Any]:
         """Transcribe audio file using Canary model"""
         try:
             if self.model is None:
@@ -252,15 +233,18 @@ class CanaryTranscriptionService:
                     raise Exception(f"Audio preprocessing failed for {file_extension} file. Please try a different format (WAV, MP3 recommended).")
             
             # Choose transcription method based on loaded model
-            if self.model == "whisper":
+            if self.model == "canary":
+                # Use real Canary-Qwen-2.5B model
+                logger.info("Using Canary-Qwen-2.5B for transcription")
+                return await self.canary_service.transcribe_audio(processed_path, job_id)
+            elif self.model == "whisper":
                 # Use Whisper for real transcription
-                return await self.whisper_service.transcribe_audio(audio_path)
-            elif self.model == "mock":
-                # Mock transcription for development/testing
-                return await self._mock_transcription(processed_path)
+                logger.info("Using Whisper for transcription")
+                return await self.whisper_service.transcribe_audio(processed_path)
             else:
-                # Real transcription with Canary model
-                return await self._real_transcription(processed_path)
+                # Mock transcription for development/testing
+                logger.warning("Using mock transcription - no real model loaded")
+                return await self._mock_transcription(processed_path, job_id)
             
         except Exception as e:
             logger.error(f"Transcription failed: {str(e)}")
@@ -279,95 +263,18 @@ class CanaryTranscriptionService:
                 except Exception as cleanup_error:
                     logger.warning(f"Failed to cleanup processed file: {cleanup_error}")
             
-            # Jetson memory cleanup
-            if self.config['clear_cache_after_inference']:
-                jetson_optimizer.cleanup_memory()
+            # Hardware memory cleanup
+            if self.config.get('clear_cache_after_inference', False):
+                hardware_optimizer.cleanup_memory()
             
             # Monitor memory pressure
-            if jetson_optimizer.check_memory_pressure():
+            memory_pressure = hardware_optimizer.check_memory_pressure()
+            if memory_pressure.get('system', False) or any(memory_pressure.get('gpus', {}).values()):
                 logger.warning("System under memory pressure after transcription")
+                hardware_optimizer.cleanup_memory()
     
-    async def _real_transcription(self, audio_path: str) -> Dict[str, Any]:
-        """Perform real transcription with Canary model"""
-        try:
-            # Load audio
-            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
-            duration = len(audio) / sr
-            logger.info(f"Canary transcription: Processing {duration:.2f}s audio")
-            
-            # Transcribe using NeMo Canary model
-            with torch.no_grad():
-                try:
-                    # Try NeMo's transcribe method
-                    if hasattr(self.model, 'transcribe'):
-                        transcriptions = self.model.transcribe([audio_path])
-                        transcription = transcriptions[0] if transcriptions else ""
-                    else:
-                        # Try alternative method for SALM
-                        logger.info("Using SALM inference method...")
-                        # For SALM models, we may need to use a different approach
-                        transcription = await self._salm_transcribe(audio_path, audio, sr)
-                        
-                except Exception as model_error:
-                    logger.warning(f"Primary transcription method failed: {model_error}")
-                    # Fallback to direct audio processing
-                    transcription = await self._salm_transcribe(audio_path, audio, sr)
-            
-            return {
-                "transcription": transcription.strip() if transcription else "",
-                "confidence": 0.92,  # Canary models typically have high confidence
-                "duration": duration,
-                "model": "nvidia/canary-qwen-2.5b"
-            }
-            
-        except Exception as e:
-            logger.error(f"Canary transcription failed: {str(e)}")
-            return await self._mock_transcription(audio_path)
     
-    async def _salm_transcribe(self, audio_path: str, audio: np.ndarray, sr: int) -> str:
-        """Transcribe using SALM model directly"""
-        try:
-            logger.info("Using SALM direct transcription...")
-            
-            # Try different SALM inference approaches
-            if hasattr(self.model, 'generate'):
-                # Use generate method if available
-                logger.info("Using model.generate()...")
-                
-                # Convert audio to tensor
-                audio_tensor = torch.FloatTensor(audio).unsqueeze(0)
-                
-                # Generate transcription
-                with torch.no_grad():
-                    outputs = self.model.generate(audio_tensor)
-                    transcription = outputs[0] if isinstance(outputs, list) else str(outputs)
-                    
-            elif hasattr(self.model, 'forward'):
-                # Use forward pass
-                logger.info("Using model.forward()...")
-                
-                audio_tensor = torch.FloatTensor(audio).unsqueeze(0)
-                with torch.no_grad():
-                    outputs = self.model.forward(audio_tensor)
-                    # Process outputs to get text (implementation depends on model)
-                    transcription = "Canary model output processed"  # Placeholder
-                    
-            else:
-                # Try using the model as a HuggingFace pipeline
-                logger.info("Using as HuggingFace model...")
-                from transformers import pipeline
-                
-                pipe = pipeline("automatic-speech-recognition", model=self.model)
-                result = pipe(audio_path)
-                transcription = result.get('text', '')
-            
-            return transcription
-            
-        except Exception as e:
-            logger.error(f"SALM direct transcription failed: {str(e)}")
-            return f"SALM transcription error: {str(e)}"
-    
-    async def _mock_transcription(self, audio_path: str) -> Dict[str, Any]:
+    async def _mock_transcription(self, audio_path: str, job_id: str = None) -> Dict[str, Any]:
         """Mock transcription for development"""
         try:
             logger.info("Starting mock transcription...")

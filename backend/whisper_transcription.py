@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
-from jetson_config import jetson_optimizer
+from hardware_config import hardware_optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +16,8 @@ class WhisperTranscriptionService:
     def __init__(self):
         self.model = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.config = jetson_optimizer.optimize_for_jetson()
-        jetson_optimizer.setup_cuda_optimizations()
+        self.config = hardware_optimizer.optimize_for_hardware()
+        hardware_optimizer.setup_cuda_optimizations()
         logger.info(f"Whisper service using device: {self.device}")
         
     async def load_model(self):
@@ -29,8 +29,20 @@ class WhisperTranscriptionService:
             logger.info("Loading OpenAI Whisper model...")
             
             import whisper
-            # Use base model for Jetson - good balance of speed/quality
-            model_size = "base" if self.config['max_memory_usage_gb'] < 6 else "small"
+            # Use largest available Whisper model with RTX 3080 setup
+            total_vram = self.config.get('total_vram_gb', 0)
+            if total_vram > 18:
+                model_size = "large-v3"  # Best quality, ~10GB VRAM needed
+                logger.info(f"Using Whisper Large-v3 (highest quality) - {total_vram:.1f}GB VRAM available")
+            elif total_vram > 10:
+                model_size = "large-v2"  # Second best, ~6GB VRAM needed  
+                logger.info(f"Using Whisper Large-v2 - {total_vram:.1f}GB VRAM available")
+            elif total_vram > 4:
+                model_size = "medium"    # Good balance, ~2GB VRAM needed
+                logger.info(f"Using Whisper Medium - {total_vram:.1f}GB VRAM available")
+            else:
+                model_size = "base"      # Fallback for low VRAM
+                logger.info(f"Using Whisper Base - {total_vram:.1f}GB VRAM available")
             
             self.model = whisper.load_model(
                 model_size, 
@@ -76,7 +88,7 @@ class WhisperTranscriptionService:
                 
                 return self.model.transcribe(
                     audio_array,
-                    language='en',  # Assume English for Jetson performance
+                    language=None,  # Auto-detect language with powerful hardware
                     fp16=torch.cuda.is_available()
                 )
             
@@ -102,9 +114,9 @@ class WhisperTranscriptionService:
                 "duration": 0.0
             }
         finally:
-            # Jetson memory cleanup
-            if self.config['clear_cache_after_inference']:
-                jetson_optimizer.cleanup_memory()
+            # Hardware memory cleanup
+            if self.config.get('clear_cache_after_inference', False):
+                hardware_optimizer.cleanup_memory()
     
     def _estimate_confidence(self, segments) -> float:
         """Estimate confidence from Whisper segments"""
